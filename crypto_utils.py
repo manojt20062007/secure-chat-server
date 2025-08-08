@@ -1,67 +1,45 @@
-# crypto_utils.py
-import base64
 import os
-import hashlib
-import time
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives.hashes import SHA256
-from cryptography.hazmat.primitives.asymmetric.x25519 import (
-    X25519PrivateKey, X25519PublicKey
-)
+import base64
+from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import serialization
 
-# ---- Password hashing (for auth only) ----
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+# --- Key Generation ---
+def generate_keypair():
+    private_key = x25519.X25519PrivateKey.generate()
+    public_key = private_key.public_key()
+    return private_key, public_key
 
-# ---- X25519 key helpers ----
-def generate_x25519_keypair():
-    private = X25519PrivateKey.generate()
-    public = private.public_key()
-    return private, public
-
-def serialize_public_key(pub: X25519PublicKey) -> str:
-    raw = pub.public_bytes()  # raw bytes
-    return base64.b64encode(raw).decode()
-
-def deserialize_public_key(b64: str) -> X25519PublicKey:
-    raw = base64.b64decode(b64)
-    return X25519PublicKey.from_public_bytes(raw)
-
-def serialize_private_key_bytes(priv: X25519PrivateKey) -> str:
-    # WARNING: only for local client storage (never send to server).
-    raw = priv.private_bytes()
-    return base64.b64encode(raw).decode()
-
-def deserialize_private_key_bytes(b64: str) -> X25519PrivateKey:
-    raw = base64.b64decode(b64)
-    return X25519PrivateKey.from_private_bytes(raw)
-
-# ---- Derive symmetric key from ECDH shared secret ----
-def derive_aes_key(shared_secret: bytes, info: bytes = b"secure-chat-e2ee") -> bytes:
-    hkdf = HKDF(
-        algorithm=SHA256(),
-        length=32,
-        salt=None,
-        info=info,
+# --- Serialization ---
+def serialize_public_key(pub):
+    raw = pub.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
     )
-    return hkdf.derive(shared_secret)
+    return base64.b64encode(raw).decode()
 
-# ---- AES-GCM encrypt/decrypt ----
-def encrypt_with_key(aes_key: bytes, plaintext: str) -> (bytes, bytes):
-    aesgcm = AESGCM(aes_key)
-    nonce = os.urandom(12)
-    ct = aesgcm.encrypt(nonce, plaintext.encode(), None)
-    return nonce, ct  # both bytes
+def load_public_key(pub_b64):
+    raw = base64.b64decode(pub_b64)
+    return x25519.X25519PublicKey.from_public_bytes(raw)
 
-def decrypt_with_key(aes_key: bytes, nonce: bytes, ciphertext: bytes) -> str:
-    aesgcm = AESGCM(aes_key)
-    pt = aesgcm.decrypt(nonce, ciphertext, None)
-    return pt.decode()
+def load_private_key(raw_bytes):
+    return x25519.X25519PrivateKey.from_private_bytes(raw_bytes)
 
-# convenience base64 helpers
-def b64(x: bytes) -> str:
-    return base64.b64encode(x).decode()
+# --- Key Exchange ---
+def derive_shared_key(private_key, peer_public_key):
+    shared_secret = private_key.exchange(peer_public_key)
+    # AESGCM requires 32 bytes (256-bit key) – X25519 gives 32 bytes already
+    return shared_secret
 
-def ub64(s: str) -> bytes:
-    return base64.b64decode(s)
+# --- Encryption ---
+def encrypt_message(shared_key, plaintext):
+    aesgcm = AESGCM(shared_key)
+    nonce = os.urandom(12)  # 96-bit nonce
+    ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
+    return nonce, ciphertext
+
+# --- Decryption ---
+def decrypt_message(shared_key, nonce, ciphertext):
+    aesgcm = AESGCM(shared_key)
+    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+    return plaintext.decode()
