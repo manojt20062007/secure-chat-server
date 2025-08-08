@@ -1,0 +1,2 @@
+flask>=2.0
+cryptography>=40.0
